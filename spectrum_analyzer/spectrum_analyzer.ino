@@ -3,78 +3,70 @@
 #include <Adafruit_GFX.h>   // adafruit graphics library
 #include <RGBmatrixPanel.h> // hardware-specific library
 
-#define CLK 8
-#define LAT A3
-#define OE  9
-#define A   A0
-#define B   A1
-#define C   A2
-RGBmatrixPanel matrix(A, B, C, CLK, LAT, OE, false);
+RGBmatrixPanel matrix(A0, A1, A2, 8, A3, 9, false);
+
+const int ledCols = 32;
+const int ledRows = 16;
 
 // colors
 const uint16_t off = matrix.Color444(0, 0, 0);
 uint16_t color1 = matrix.Color444(0, 2, 2);
 uint16_t color2 = matrix.Color444(0, 3, 1);
 
-const uint16_t bright = matrix.Color444(7, 7, 7);
-
-// bin cols
-int nCols = 2;
-
 // frame
 int frame = 0;
 
-// logarithmic scale
-bool lnScale = true;
+// bin cols
+int binSize = 2;
 
 // peak fall off
-int fallOff = 500;
+const int fallOff = 500;
 
-double appliedScale = 1.0;
+double scale = 1.;
 long int averageMillis = 0;
 
-// microphone & fft ////////////////////////////////////////////////////////////
-
-#include <fix_fft.h>
-
-#define M       6
-#define N      (1<<M)
+// microphone //////////////////////////////////////////////////////////////////
 
 #define MIC_PIN A5
 
-int micValue;
-unsigned int micMin;
-unsigned int micMax;
+int micVal;
+
+// fft /////////////////////////////////////////////////////////////////////////
+
+#include <fix_fft.h>
+
+#define M  6
+#define N (1<<M)
 
 char re[64];
 char im[64];
 
-int amplitude;
 char spectrum[32];
-
 char peaks[32];
-long int peaked[32];
+long int peakMillis[32];
 
-int maxAmplitude = 0;
+int amplitude;
+int maxAmplitude = 1;
 
 // button //////////////////////////////////////////////////////////////////////
 
 #define BUTTON_PIN 13
 
-bool buttonNow = HIGH;
-bool buttonLast = HIGH;
+bool buttonVal = HIGH;
+bool prevButtonVal = HIGH;
 
-long int downTime = -1;
+long int downTime = 0;
 
 // pot /////////////////////////////////////////////////////////////////////////
 
 #define POT_PIN A4
 
-int potValue = 0;
+int potVal = 0;
 
 // general /////////////////////////////////////////////////////////////////////
 
-unsigned int i, j;
+unsigned int i;
+unsigned int j;
 
 // /////////////////////////////////////////////////////////////////////////////
 
@@ -88,39 +80,21 @@ void setup()
     matrix.begin();
     matrix.fillScreen(off); // clear
 
-    char start = fallOff < 1001 ? 15 : 0;
-
     resetPeaks();
-    resetScale();
 
     Serial.begin(9600);
 }
 
 void resetPeaks()
 {
-    char start = fallOff < 1001 ? 15 : 0;
+    char start = ledRows;
 
-    for (i = 0; i < 32; i++)
+    for (i = 0; i < ledCols; i++)
     {
         peaks[i] = start;
-
-        peaked[i] = millis();
-        matrix.drawPixel(i, 15 - start, color2);
+        peakMillis[i] = millis();
+        matrix.drawPixel(i, ledRows - start, color2);
         delay(13);
-    }
-}
-
-void resetScale()
-{
-    averageMillis = millis();
-
-    if (lnScale)
-    {
-        appliedScale = 15.0 / 10.0;
-    }
-    else
-    {
-        appliedScale = 15.0 / 181.0;
     }
 }
 
@@ -132,55 +106,54 @@ void loop()
     fftLoop();
     buttonLoop();
     potLoop();
+
+    // consolidate bins
+    if (binSize > 1)
+    {
+        for (i = 0; i < ledCols / binSize; i++)
+        {
+            int avg = 0;
+            for (j = 0; j < binSize; j++)
+            {
+                avg += spectrum[i * binSize + j];
+            }
+            avg /= binSize;
+
+            for (j = 0; j < binSize; j++)
+            {
+                spectrum[i * binSize + j] = avg;
+            }
+        }
+    }
+
     drawLoop();
 
+    // reset max amplitude every second
+    if (millis() - averageMillis > 1000)
+    {
+        averageMillis = millis();
+        scale = ledRows / maxAmplitude;
+        maxAmplitude = 1;
+    }
+
     // progress frame
-    frame = (frame + 1) % 32;
+    frame = (frame + 1) % ledCols;
 }
 
 // /////////////////////////////////////////////////////////////////////////////
 
 void micLoop()
 {
-    micMin = 1023;
-    micMax = 0;
-
-    // collect signals
+    // collect mic signals
     for (i = 0; i < N; i++)
     {
         // read DAC [0,1023]
-        micValue = analogRead(MIC_PIN);
-
-        if (micValue > 1023)
-        {
-            continue;
-        }
-
-        if (micValue > micMax)
-        {
-            micMax = micValue;
-        }
-        else if (micValue < micMin)
-        {
-            micMin = micValue;
-        }
-
-        // MAX9814 has an output of 2Vpp max on a 1.25V DC bias
-        // lower edge: 0.25/(3.3/1024) = 77.57575757575758
-        // upper edge: 2.25/(3.3/1024) = 698.1818181818182
-        // map and clamp accordingly
-        //micValue = map(micValue, 77, 698, 0, 1023);
-
+        micVal = analogRead(MIC_PIN);
         // convert to char range
-        re[i] = (micValue / 4) - 128; // [-128,127]
+        re[i] = (micVal / 4) - 128; // [-128,127]
         // set imaginary part to zero
         im[i] = 0;
     }
-
-    int peak2peak = micMax - micMin;
-    double volts = (peak2peak * 3.3) / 1024;
-
-    //Serial.println(volts);
 }
 
 void fftLoop()
@@ -199,46 +172,24 @@ void fftLoop()
             continue;
         }
 
-        if (lnScale)
-        {
-            amplitude = log(amplitude); // [0,10]
-            //map(amplitude, 0, 10, 0, 15);
-        }
-        else
-        {
-            amplitude = sqrt(amplitude); // [0,181]
-            //map(amplitude, 0, 181, 0, 15);
-        }
+        // log scale [0,10]
+        amplitude = log(amplitude);
 
         if (amplitude > maxAmplitude)
         {
             maxAmplitude = amplitude;
         }
 
-        // normalize values (scale to max)
-        spectrum[i] = amplitude * appliedScale;
-        //spectrum[i] = constrain(spectrum[i], 0, 15);
-    }
-
-    // reset max amplitude every 3 seconds
-    if (millis() - averageMillis > 3000)
-    {
-        averageMillis = millis();
-        appliedScale = 15.0 / (double) maxAmplitude;
-        maxAmplitude = 0;
+        spectrum[i] = amplitude;
     }
 }
 
 void potLoop()
 {
     // read DAC [0,1023]
-    potValue = analogRead(POT_PIN);
-    potValue = constrain(potValue, 0, 1023);
+    potVal = analogRead(POT_PIN);
 
-    //Serial.println(potValue);
-
-    long hue1 = map(potValue, 0, 1023, 0, 1535);
-    hue1 = constrain(hue1, 0, 1535);
+    long hue1 = map(potVal, 0, 1023, 0, 1535);
 
     long hue2 = hue1 - 200;
     if (hue2 < 0)
@@ -252,93 +203,58 @@ void potLoop()
 
 void buttonLoop()
 {
-    buttonNow = digitalRead(BUTTON_PIN);
+    buttonVal = digitalRead(BUTTON_PIN);
 
-    if (buttonLast == HIGH && buttonNow == LOW)
+    if (prevButtonVal == HIGH && buttonVal == LOW) // got pushed
     {
-        // got pushed
         downTime = millis();
     }
-    else if (buttonLast == LOW && buttonNow == HIGH)
+    else if (prevButtonVal == LOW && buttonVal == HIGH) // got released
     {
-        // got released
-        long int duration = millis() - downTime;
-        //Serial.println(duration);
-
-        if (duration > 1000)
+        if (millis() - downTime > 500)
         {
-            resetPeaks();
-        }
-        else if (duration > 200)
-        {
-            lnScale = !lnScale;
-            resetScale();
+            binSize = binSize == 1 ? 2 : 1;
         }
         else
         {
-            nCols = nCols == 1 ? 2 : 1;
+            resetPeaks();
         }
     }
 
-    buttonLast = buttonNow;
+    prevButtonVal = buttonVal;
 }
 
 void drawLoop()
 {
-    // consolidate bins
-    if (nCols > 1)
+    for (i = 0; i < ledCols; i++)
     {
-        for (i = 0; i < 32 / nCols; i++)
+        char val = spectrum[i] * scale;
+        if (val > ledRows)
         {
-            int avg = 0;
-            for (j = 0; j < nCols; j++)
-            {
-                avg += spectrum[i * nCols + j];
-            }
-            avg /= nCols;
-
-            for (j = 0; j < nCols; j++)
-            {
-                spectrum[i * nCols + j] = avg;
-            }
+            val = ledRows;
         }
-    }
 
-    // draw
-    for (int i = 0; i < 32; i++)
-    {
-        // clamp
-        spectrum[i] = constrain(spectrum[i], 0, 15);
-
-        // overwrite last avg if larger than last avg and more than one
-        if (spectrum[i] > 0 && spectrum[i] > peaks[i])
+        if (val > peaks[i])
         {
-            peaks[i] = spectrum[i];
-            peaked[i] = millis();
+            peaks[i] = val;
+            peakMillis[i] = millis();
         }
-        else if (peaks[i] >= 0 && millis() - peaked[i] > fallOff)
+        else if (peaks[i] > 0 && millis() - peakMillis[i] > fallOff)
         {
             // reduce peak height incrementally after timeout
             peaks[i] -= 1;
         }
 
-        // finally clear screen and draw bins
-        for (j = 0; j < 16; j++)
+        // clear screen and draw bins
+        for (j = 0; j < ledRows; j++)
         {
-            if (j < spectrum[i]) // main color
-            {
-                matrix.drawPixel(i, 15 - j, color1);
-            }
-            else // clear
-            {
-                matrix.drawPixel(i, 15 - j, off);
-            }
+            matrix.drawPixel(i, ledRows - 1 - j, j < val ? color1 : off);
         }
 
         // draw peaks
-        if (peaks[i] >= 0) // peak color
+        if (peaks[i] > 0)
         {
-            matrix.drawPixel(i, 15 - peaks[i], color2);
+            matrix.drawPixel(i, ledRows - peaks[i], color2);
         }
     }
 }
