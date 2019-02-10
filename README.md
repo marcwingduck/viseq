@@ -11,7 +11,7 @@ Here is an early video of how it looks like:
 
 [![Visual Equalizer](https://img.youtube.com/vi/bxcpWqqqpuE/0.jpg)](https://www.youtube.com/watch?v=bxcpWqqqpuE)
 
-A short push to the momentary pushbutton toggles betweeen single or two bar mode.
+A short push to the momentary pushbutton toggles between one, two and four column-wide bar mode.
 A long press resets the start animation to be displayed again.
 A pot is used to change colors.
 A main switch toggles overall power, two smaller switches can cut off power to the Arduino and the LED matrix respectively.
