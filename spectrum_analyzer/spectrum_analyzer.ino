@@ -23,46 +23,73 @@ uint16_t color2 = color0;
 char re[N];
 char im[N];
 
+// normalized average of log amplitude
+float avgAmpNorm = 0.;
+float normAmp = log(32768);
+
 // N/2 must match LED_COLS!
 float spectrum[N / 2];
 char peaks[N / 2];
 long int peakMillis[N / 2];
 
-// dynamic scaling
-double scale = 1.;
-long int averageMillis = 0;
-float maxAmpNorm = 0.;
-float normAmp = log(32768);
-
 // button
-bool buttonVal = HIGH;
 bool prevButtonVal = HIGH;
 long int pushTime = 0;
-
-// counter
-unsigned int i = 0;
-unsigned int j = 0;
 
 // visualization settings
 int binSize = 1; // two column bin mode
 const int fallOff = 500; // peak fall off in ms
 
+// counter
+unsigned int i = 0;
+unsigned int j = 0;
+
+// moving mean /////////////////////////////////////////////////////////////////
+
+#define MM_SIZE 32
+
+float mmValues[MM_SIZE];
+float mmSum = 0.;
+int mmIndex = 0;
+int mmSize = 0;
+
+float addValue(float val)
+{
+    mmSum = mmSum - mmValues[mmIndex] + val;
+    mmValues[mmIndex] = val;
+    mmIndex = (mmIndex + 1) % MM_SIZE;
+    mmSize = min(mmSize + 1, MM_SIZE);
+    return mmSum / (float) mmSize;
+}
+
 // /////////////////////////////////////////////////////////////////////////////
 
 void setup()
 {
+    memset(mmValues, 0, sizeof(mmValues));
+
     analogReference(EXTERNAL);
     pinMode(BUTTON_PIN, INPUT);
     digitalWrite(BUTTON_PIN, HIGH); // enable pull-up
 
     matrix.begin();
 
-    // read initial colors
-    potLoop();
-    resetPeaks();
+    potLoop(); // read initial colors
+    resetPeaks(); // start animation
 
     Serial.begin(9600);
 }
+
+void loop()
+{
+    micLoop();
+    fftLoop();
+    buttonLoop();
+    potLoop();
+    drawLoop();
+}
+
+// /////////////////////////////////////////////////////////////////////////////
 
 void resetPeaks()
 {
@@ -75,51 +102,6 @@ void resetPeaks()
         peakMillis[i] = millis();
         matrix.drawPixel(i, LED_ROWS - start, color2);
         delay(13);
-    }
-}
-
-// /////////////////////////////////////////////////////////////////////////////
-
-void loop()
-{
-    micLoop();
-    fftLoop();
-    buttonLoop();
-    potLoop();
-
-    // consolidate bins
-    if (binSize > 0)
-    {
-        int binWidth = 1 << binSize;
-
-        for (i = 0; i < LED_COLS / binWidth; i++)
-        {
-            float maxVal = 0.;
-            for (j = 0; j < binWidth; j++)
-            {
-                float val = spectrum[i * binWidth + j];
-                maxVal = max(maxVal, val);
-            }
-
-            for (j = 0; j < binWidth; j++)
-            {
-                spectrum[i * binWidth + j] = maxVal;
-            }
-        }
-    }
-
-    drawLoop();
-
-    // reset max amplitude every second
-    if (millis() - averageMillis > 1000)
-    {
-        averageMillis = millis();
-        scale = 1.;
-        if (maxAmpNorm > 0.16) // silence returns values of up to 0.15
-        {
-            scale = (1. / maxAmpNorm) * LED_ROWS;
-        }
-        maxAmpNorm = 0.;
     }
 }
 
@@ -139,6 +121,8 @@ void micLoop()
 
 void fftLoop()
 {
+    float maxAmpNorm = 0.;
+
     // fft
     fix_fft(re, im, M, 0);
 
@@ -146,7 +130,6 @@ void fftLoop()
     for (i = 0; i < N / 2; i++)
     {
         spectrum[i] = 0.;
-
         int amp = re[i] * re[i] + im[i] * im[i]; // max 32768
 
         if (amp > 0)
@@ -157,19 +140,15 @@ void fftLoop()
             spectrum[i] = ampNorm;
         }
     }
+
+    avgAmpNorm = addValue(maxAmpNorm);
 }
 
 void potLoop()
 {
-    // read DAC [0,1023]
-    int potVal = analogRead(POT_PIN);
-
+    int potVal = analogRead(POT_PIN); // [0, 1023]
     long hue1 = map(potVal, 0, 1023, 0, 1535);
-    long hue2 = hue1 - 200;
-    if (hue2 < 0)
-    {
-        hue2 = 1535 + hue2;
-    }
+    long hue2 = (hue1 + 1335) % 1535;
 
     color1 = matrix.ColorHSV(hue1, 255, 127, true);
     color2 = matrix.ColorHSV(hue2, 255, 127, true);
@@ -177,7 +156,7 @@ void potLoop()
 
 void buttonLoop()
 {
-    buttonVal = digitalRead(BUTTON_PIN);
+    bool buttonVal = digitalRead(BUTTON_PIN);
 
     if (prevButtonVal == HIGH && buttonVal == LOW) // got pushed
     {
@@ -200,10 +179,33 @@ void buttonLoop()
 
 void drawLoop()
 {
+    // consolidate bins
+    if (binSize > 0)
+    {
+        int binWidth = 1 << binSize;
+        float maxVal = 0.;
+        for (i = 0; i < LED_COLS / binWidth; i++)
+        {
+            maxVal = 0.;
+            for (j = 0; j < binWidth; j++)
+            {
+                maxVal = max(maxVal, spectrum[i * binWidth + j]);
+            }
+
+            for (j = 0; j < binWidth; j++)
+            {
+                spectrum[i * binWidth + j] = maxVal;
+            }
+        }
+    }
+
+    // silence returns values of up to 0.15
+    float scale = avgAmpNorm < 0.16 ? 0 : 1. / avgAmpNorm * LED_ROWS;
+
+    // draw
     for (i = 0; i < LED_COLS; i++)
     {
-        char val = round(spectrum[i] * scale);
-        val = min(val, LED_ROWS);
+        char val = min(round(spectrum[i] * scale), LED_ROWS);
 
         if (val > peaks[i])
         {
