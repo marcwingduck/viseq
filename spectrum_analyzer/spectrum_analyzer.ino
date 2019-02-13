@@ -33,7 +33,7 @@ char peaks[N / 2];
 long int peakMillis[N / 2];
 
 // button
-bool prevButtonVal = HIGH;
+bool lastButtonState = HIGH; // released
 long int pushTime = 0;
 
 // visualization settings
@@ -156,25 +156,28 @@ void potLoop()
 
 void buttonLoop()
 {
-    bool buttonVal = digitalRead(BUTTON_PIN);
+    bool buttonState = digitalRead(BUTTON_PIN);
 
-    if (prevButtonVal == HIGH && buttonVal == LOW) // got pushed
+    if (buttonState != lastButtonState)
     {
-        pushTime = millis();
-    }
-    else if (prevButtonVal == LOW && buttonVal == HIGH) // got released
-    {
-        if (millis() - pushTime > 500) // long push
+        if (buttonState == HIGH) // released
         {
-            resetPeaks();
+            if (millis() - pushTime > 500) // long push
+            {
+                resetPeaks();
+            }
+            else // short push
+            {
+                binSize = (binSize + 1) % 3;
+            }
         }
-        else // short push
+        else // pushed
         {
-            binSize = (binSize + 1) % 3;
+            pushTime = millis();
         }
     }
 
-    prevButtonVal = buttonVal;
+    lastButtonState = buttonState;
 }
 
 void drawLoop()
