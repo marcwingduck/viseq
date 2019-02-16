@@ -22,7 +22,7 @@ A main switch toggles overall power, two smaller switches can cut off power to t
 * RGB matrix panel
 * fix_fft
 
-All libraries can be installed using the Arduino IDE's Libray Manager.
+All libraries can be installed using the Arduino IDE's Library Manager.
 
 ## Components
 
